@@ -3,7 +3,28 @@ import { onMounted, ref } from "vue";
 import { marked } from "marked";
 import DOMPurify from "isomorphic-dompurify";
 
+import {
+  onAuthStateChanged,
+  signInWithPopup,
+  GoogleAuthProvider,
+  getAuth,
+  signOut,
+} from "firebase/auth";
 import { initializeApp } from "firebase/app";
+import {
+  onSnapshot,
+  addDoc,
+  getFirestore,
+  collection,
+  getDocs,
+  query,
+  where,
+  updateDoc,
+  doc,
+  arrayUnion,
+  setDoc,
+} from "firebase/firestore";
+
 const firebaseConfig = {
   apiKey: "AIzaSyBJj_h5OtXy3IU6LObjPLFQ0UKWXSJp1e4",
   authDomain: "suggest-ai.firebaseapp.com",
@@ -14,10 +35,13 @@ const firebaseConfig = {
   measurementId: "G-TG5WQ9340Y",
 };
 const app = initializeApp(firebaseConfig);
+const provider = new GoogleAuthProvider();
+const auth = getAuth();
+const db = getFirestore(app);
 
 const memoArr = ref([]);
 const memoArrFiltered = ref([]);
-const memoId = ref(0);
+const memoId = ref("");
 const myTextCr = ref("");
 const myText = ref("");
 const myAns = ref("");
@@ -26,8 +50,9 @@ const myTitle = ref("");
 const myChatMsgs = ref([]);
 const your_api_key = import.meta.env.VITE_OPENAI_API_KEY;
 const isDis = ref(false);
-const usedTags = ref(["#idea", "#to-do", "#done"]);
-const currentFilterTag = ref("");
+const usedTags = ref([]);
+const currentFilterTag = ref(null);
+const user = ref(null);
 
 const myChat = async () => {
   myChatMsgs.value.push({ role: "user", content: myText.value });
@@ -66,7 +91,10 @@ const myChat = async () => {
 
   let messages = [];
   for (const myChatMsg of myChatMsgs.value) {
-    messages.push(myChatMsg);
+    messages.push({
+      role: myChatMsg.role,
+      content: myChatMsg.content.slice(0, 64),
+    });
   }
 
   if (messages.length > 7) {
@@ -81,7 +109,7 @@ const myChat = async () => {
     model: "gpt-3.5-turbo",
     messages,
     max_tokens: 128,
-    temperature: 0.75,
+    temperature: 0.5,
     // frequency_penalty: 1.0,
     // stream: true,
   };
@@ -94,7 +122,17 @@ const myChat = async () => {
       Authorization: "Bearer " + String(your_api_key),
     },
     body: JSON.stringify(params_),
+  }).catch((e) => {
+    myAns.value = "すみません！ エラーです" + e;
+
+    return;
   });
+
+  if (!result.ok) {
+    myAns.value = "何らかのエラーです";
+
+    return;
+  }
   const myjson = await result.json();
   console.log(myjson);
   myAns.value = myjson.choices[0].message.content;
@@ -134,13 +172,15 @@ const myChatTagger = async () => {
       {
         role: "assistant",
         content:
-          '[{"tag":"idea", "value": 0.75}, {"tag":"to-do", "value": 0.33}, {"tag":"done", "value": 0.0}]',
+          '[{"tag":"#idea", "value": 0.75}, {"tag":"#to-do", "value": 0.33}, {"tag":"#done", "value": 0.0}]',
       },
       {
         role: "user",
-        content: `{"text": "${myText.value}", "tags": [${usedTags.value.join(
-          ","
-        )}]}`,
+        content: `{"text": "${myText.value}", "tags": [${usedTags.value
+          .map((elm) => {
+            return elm.data.name;
+          })
+          .join(",")}]}`,
       },
     ],
     max_tokens: 256,
@@ -157,7 +197,18 @@ const myChatTagger = async () => {
       Authorization: "Bearer " + String(your_api_key),
     },
     body: JSON.stringify(params_),
+  }).catch((e) => {
+    alert("すみません！ エラーです" + e);
+
+    return;
   });
+
+  if (!result.ok) {
+    myTags.value = Array.from(new Set(myTags.value));
+
+    return;
+  }
+
   const myjson = await result.json();
   console.log(myjson);
   try {
@@ -168,7 +219,21 @@ const myChatTagger = async () => {
       for (const tag of tags) {
         console.log(tag);
         if (tag.value > 0.5) {
-          myTags.value.push(`#${tag.tag}`);
+          if (
+            usedTags.value.findIndex((tag_) => {
+              return tag_.data.name == tag.tag;
+            }) == -1
+          ) {
+            // タグがない=新規タグ
+            setDoc(doc(db, "tags", tag.tag), {
+              name: tag.tag,
+              created: new Date(),
+              added: new Date(),
+              uid: arrayUnion(user.value.uid),
+            });
+          }
+
+          myTags.value.push(`${tag.tag}`);
         }
       }
     }
@@ -185,6 +250,8 @@ const myChatSummarize = async () => {
     joinedText += `${msg.content}\n`;
   });
 
+  joinedText = joinedText.slice(joinedText.length - 512);
+
   console.log("joined", joinedText);
 
   const DEFAULT_PARAMS = {
@@ -193,7 +260,7 @@ const myChatSummarize = async () => {
       {
         role: "system",
         content:
-          "あなたはアプリのアシスタントです。ユーザーが与えてくるテキストを50文字程度に要約してください。",
+          "あなたはアプリのアシスタントです。ユーザーが与えてくるテキストを32文字程度に要約してください。",
       },
       {
         role: "system",
@@ -229,6 +296,12 @@ const myChatSummarize = async () => {
     },
     body: JSON.stringify(params_),
   });
+
+  if (!result.ok) {
+    myTitle.value = "何らかのエラーです";
+    return;
+  }
+
   const myjson = await result.json();
   console.log(myjson);
 
@@ -240,6 +313,10 @@ const myChatSummarize = async () => {
 
 const valueReset = async () => {
   myText.value = "";
+  memoId.value = "";
+  myTitle.value = "";
+  myTags.value.slice(0, myTags.value.length);
+  myChatMsgs.value.slice(0, myChatMsgs.value.length);
 };
 
 const tagSet = async () => {
@@ -247,28 +324,48 @@ const tagSet = async () => {
   for (const match of [...matches]) {
     console.log("mt", match);
     myTags.value.push(match[0]);
-    usedTags.value.push(match[0]);
+
+    if (
+      usedTags.value.findIndex((tag) => {
+        return tag.data.name == match[0];
+      }) == -1
+    ) {
+      // タグがない=新規タグ
+      setDoc(doc(db, "tags", match[0]), {
+        name: match[0],
+        created: new Date(),
+        added: new Date(),
+        uid: arrayUnion(user.value.uid),
+      });
+    } else {
+      updateDoc(doc(db, "tags", match[0]), {
+        added: new Date(),
+        uid: arrayUnion(user.value.uid),
+      });
+    }
   }
   myTags.value = Array.from(new Set(myTags.value));
-  usedTags.value = Array.from(new Set(usedTags.value));
 };
 
-const setMemoArrValue = async () => {
-  const copyArr = memoArr.value.slice(0, memoArr.value.length);
-  console.log("memoId", memoId.value);
-  copyArr[memoId.value] = {
-    id: memoId.value,
+const setMemoArrValue = async (did) => {
+  let didtmp = "";
+  if (typeof did.id === "undefined") {
+    didtmp = did;
+  } else {
+    didtmp = did.id;
+  }
+  console.log("did", did, "didtmp", didtmp);
+
+  setDoc(doc(db, "memoPads", didtmp), {
     title: myTitle.value,
     tags: myTags.value.slice(0, myTags.value.length),
     msgs: myChatMsgs.value.slice(0, myChatMsgs.value.length),
     date: new Date().getTime(),
-  };
-  console.log("copyArr", copyArr);
-  memoArr.value = copyArr;
-  console.log("memoArr", memoArr.value);
+    uid: user.value.uid,
+  });
 };
 
-const myPromises = async () => {
+const myPromises = async (did) => {
   if (myText.value.length === 0) return;
   console.log("mypromises");
   isDis.value = true;
@@ -280,7 +377,7 @@ const myPromises = async () => {
 
     valueReset(),
   ]);
-  await setMemoArrValue();
+  await setMemoArrValue(did);
 
   console.log("memoId", memoId.value);
   selectTag({}, currentFilterTag.value);
@@ -300,22 +397,23 @@ const classCm = (msg) => {
 const createMemo = async () => {
   if (myTextCr.value.length === 0) return;
 
-  memoId.value = memoArr.value.length;
   myText.value = myTextCr.value;
   myAns.value = "";
   myTags.value.splice(0);
   myTitle.value = "";
   myChatMsgs.value.splice(0);
   myTextCr.value = "";
-  memoArr.value.push({
-    id: memoId.value,
+  memoArr.value.push();
+
+  const did = await addDoc(collection(db, "memoPads"), {
     title: "",
     tags: [],
     msgs: [],
     date: new Date().getTime(),
   });
 
-  await myPromises();
+  // memoId.value = did;
+  await myPromises(did);
 
   document.getElementById("addMemo").scrollIntoView({ behavior: "smooth" });
 };
@@ -330,13 +428,16 @@ const selectMemo = (id) => {
   console.log("finded", findedMemo);
 
   if (typeof findedMemo !== "undefined") {
-    memoId.value = id;
+    memoId.value = findedMemo.id;
     myAns.value = "";
     myTags.value.splice(0);
-    myTags.value = findedMemo.tags.slice(0, findedMemo.tags.length);
-    myTitle.value = findedMemo.title;
+    myTags.value = findedMemo.data.tags.slice(0, findedMemo.data.tags.length);
+    myTitle.value = findedMemo.data.title;
     myChatMsgs.value.splice(0);
-    myChatMsgs.value = findedMemo.msgs.slice(0, findedMemo.msgs.length);
+    myChatMsgs.value = findedMemo.data.msgs.slice(
+      0,
+      findedMemo.data.msgs.length
+    );
 
     document.getElementById("addMemo").scrollIntoView({ behavior: "smooth" });
   }
@@ -345,11 +446,11 @@ const selectTag = (ev, tag) => {
   console.log(ev, tag);
   currentFilterTag.value = tag;
 
-  if (tag != "") {
+  if (tag != null) {
     const memoTmp = memoArr.value.filter((memo) => {
       return (
-        memo.tags.findIndex((memotag) => {
-          return tag == memotag;
+        memo.data.tags.findIndex((memotag) => {
+          return tag.data.name == memotag;
         }) != -1
       );
     });
@@ -362,17 +463,107 @@ const selectTag = (ev, tag) => {
   }
 };
 
+const signGoogle = () => {
+  signInWithPopup(auth, provider);
+};
+
+const outGoogle = () => {
+  signOut(auth);
+};
+
 onMounted(() => {
-  selectTag({}, "");
+  onAuthStateChanged(auth, async (usr) => {
+    if (usr !== null) {
+      user.value = usr;
+
+      const q = query(
+        collection(db, "tags"),
+        where("uid", "array-contains", user.value.uid)
+      );
+
+      onSnapshot(q, (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          console.log("change", change);
+          if (change.type == "added") {
+            usedTags.value.push({
+              id: change.doc.id,
+              data: change.doc.data(),
+            });
+            usedTags.value.sort((a, b) => {
+              return b.data.added - a.data.added;
+            });
+          }
+          if (change.type == "modified") {
+            const changedIndex = usedTags.value.findIndex((elm) => {
+              return elm.id == change.doc.id;
+            });
+            usedTags.value.splice(changedIndex, 1);
+            usedTags.value.push({ id: change.doc.id, data: change.doc.data() });
+            usedTags.value.sort((a, b) => {
+              return b.data.added - a.data.added;
+            });
+          }
+        });
+      });
+
+      const q_pads = query(
+        collection(db, "memoPads"),
+        where("uid", "==", user.value.uid)
+      );
+      onSnapshot(q_pads, (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          console.log("change", change);
+          if (change.type == "added") {
+            memoArr.value.push({
+              id: change.doc.id,
+              data: change.doc.data(),
+            });
+            memoArr.value.sort((a, b) => {
+              return b.data.date - a.data.date;
+            });
+          }
+          if (change.type == "modified") {
+            let changedMemoIndex = memoArr.value.findIndex((memo) => {
+              console.log(memo);
+              return memo.id == change.doc.id;
+            });
+            memoArr.value.splice(changedMemoIndex, 1);
+            memoArr.value.push({
+              id: change.doc.id,
+              data: change.doc.data(),
+            });
+            memoArr.value.sort((a, b) => {
+              return b.data.date - a.data.date;
+            });
+          }
+        });
+      });
+    } else {
+      user.value = usr;
+    }
+  });
+
+  selectTag({}, null);
 });
 </script>
 
 <template>
   <div id="app" class="h-screen container mx-auto flex overflow-scroll">
     <section
+      v-if="user !== null"
       id="tagAndHeader"
       class="bg-primary text-primary-content max-w-sm w-[12rem] m-1 p-1 shrink-0 border border-primary flex flex-col justify-start items-stretch"
     >
+      <button
+        class="btn mb-2"
+        @click="
+          ($event) => {
+            outGoogle();
+          }
+        "
+      >
+        SignOut
+      </button>
       <header>
         <h1 class="text-center p-8 bg-base-content font-black">Suggest</h1>
       </header>
@@ -382,7 +573,7 @@ onMounted(() => {
             class="text-right cursor-pointer"
             @click="
               ($event) => {
-                selectTag($event, '');
+                selectTag($event, null);
               }
             "
           >
@@ -397,24 +588,25 @@ onMounted(() => {
             class="text-right cursor-pointer"
             v-for="tag of usedTags"
           >
-            {{ tag }}
+            {{ tag.data.name }}
           </li>
         </ul>
       </nav>
     </section>
     <section
+      v-if="user !== null"
       id="createMemo"
       class="max-w-md w-[48rem] m-1 p-1 shrink-0 border border-primary flex flex-col justify-between items-stretch"
     >
       <section class="flex flex-col overflow-scroll">
         <h2>MemoPads</h2>
         <div
-          v-if="currentFilterTag != ''"
+          v-if="currentFilterTag != null && currentFilterTag.data != null"
           class="badge badge-outline bg-primary text-white"
         >
-          {{ currentFilterTag }}
+          {{ currentFilterTag.data.name }}
         </div>
-        <article class="card m-2 p-2 shadow-xl" v-for="memo of memoArrFiltered">
+        <article class="card m-4 p-2 shadow-xl" v-for="memo of memoArrFiltered">
           <h1
             @click="
               ($event) => {
@@ -423,13 +615,15 @@ onMounted(() => {
             "
             class="card-title cursor-pointer link-primary"
           >
-            {{ memo.title }}
+            {{ memo.data.title }}
           </h1>
 
-          <p class="text-right">{{ new Date(memo.date).toLocaleString() }}</p>
+          <p class="text-right">
+            {{ new Date(memo.data.date).toLocaleString() }}
+          </p>
           <div class="flex justify-end items-baseline flex-wrap">
             <div
-              v-for="tag of memo.tags"
+              v-for="tag of memo.data.tags"
               class="badge badge-outline bg-primary bg-primary-content"
             >
               {{ tag }}
@@ -456,12 +650,15 @@ onMounted(() => {
       </div>
     </section>
     <section
+      v-if="user !== null"
       id="addMemo"
-      class="max-w-md w-[48rem] max-h-[100vh] overflow-scroll shrink-0 border border-primary m-1 p-1 flex flex-col justify-between items-stretch"
+      class="max-w-md w-[48rem] max-h-[100vh] shrink-0 border border-primary m-1 p-1 flex flex-col justify-between items-stretch"
     >
-      <main>
+      <main
+        class="max-h-[100vh] overflow-scroll flex flex-col justify-between items-stretch"
+      >
         <h2>Memos</h2>
-        <article class="card m-2 p-2 shadow-xl" v-if="myChatMsgs.length > 0">
+        <article class="card m-4 p-2 shadow-xl" v-if="myChatMsgs.length > 0">
           <h1 class="card-title">
             {{ myTitle }}
           </h1>
@@ -496,12 +693,31 @@ onMounted(() => {
             class="flex-1 btn p-2 m-2 btn-primary"
             type="button"
             :disabled="isDis"
-            @click="myPromises"
+            @click="
+              ($event) => {
+                myPromises(memoId);
+              }
+            "
           >
             Add Memo
           </button>
         </div>
       </div>
+    </section>
+    <section v-if="user == null">
+      <h1 class="text-center p-8 bg-base-content font-black text-white">
+        Suggest
+      </h1>
+      <button
+        @click="
+          ($event) => {
+            signGoogle();
+          }
+        "
+        class="btn p-2 m-2 btn-primary"
+      >
+        SignIn With Google
+      </button>
     </section>
   </div>
 </template>
