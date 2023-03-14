@@ -540,6 +540,8 @@ onMounted(() => {
       });
     } else {
       user.value = usr;
+      memoArr.value = [];
+      usedTags.value = [];
     }
   });
 
