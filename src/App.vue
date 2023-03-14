@@ -1,5 +1,19 @@
 <script setup>
 import { onMounted, ref } from "vue";
+import { marked } from "marked";
+import DOMPurify from "isomorphic-dompurify";
+
+import { initializeApp } from "firebase/app";
+const firebaseConfig = {
+  apiKey: "AIzaSyBJj_h5OtXy3IU6LObjPLFQ0UKWXSJp1e4",
+  authDomain: "suggest-ai.firebaseapp.com",
+  projectId: "suggest-ai",
+  storageBucket: "suggest-ai.appspot.com",
+  messagingSenderId: "651365846200",
+  appId: "1:651365846200:web:f6a0482bb34e8caeaab84d",
+  measurementId: "G-TG5WQ9340Y",
+};
+const app = initializeApp(firebaseConfig);
 
 const memoArr = ref([]);
 const memoArrFiltered = ref([]);
@@ -23,6 +37,11 @@ const myChat = async () => {
       role: "system",
       content:
         "あなたはアプリのアシスタントです。ユーザーが与えてくるテキストを、ポジティブ/ネガティブで判断し、ポジティブな場合は褒めて、ネガティブな場合は励ましてください。",
+    },
+    {
+      role: "system",
+      content:
+        "与えられたトークンが少ないため、30~50文字程度で応答してください。",
     },
     {
       role: "system",
@@ -61,8 +80,8 @@ const myChat = async () => {
   const DEFAULT_PARAMS = {
     model: "gpt-3.5-turbo",
     messages,
-    max_tokens: 1024,
-    temperature: 0.66,
+    max_tokens: 128,
+    temperature: 0.75,
     // frequency_penalty: 1.0,
     // stream: true,
   };
@@ -93,7 +112,7 @@ const myChatTagger = async () => {
       {
         role: "system",
         content:
-          "あなたはアプリのアシスタントです。ユーザーが与えてくるテキストを、ユーザーが与えてくるタグに当てはめて、当てはまる度合いを返してください。JSON形式で返してください。",
+          "あなたはアプリのアシスタントです。ユーザーが与えてくるテキストを、ユーザーが与えてくるタグに当てはめて、当てはまる度合い0.0~10.0までの範囲で返してください。JSON形式で返してください。",
       },
       {
         role: "system",
@@ -124,7 +143,7 @@ const myChatTagger = async () => {
         )}]}`,
       },
     ],
-    max_tokens: 1024,
+    max_tokens: 256,
     temperature: 0.0,
     // frequency_penalty: 1.0,
     // stream: true,
@@ -148,7 +167,7 @@ const myChatTagger = async () => {
     if (typeof tags == "array" || typeof tags == "object") {
       for (const tag of tags) {
         console.log(tag);
-        if (tag.value >= 0.5) {
+        if (tag.value > 0.5) {
           myTags.value.push(`#${tag.tag}`);
         }
       }
@@ -165,6 +184,8 @@ const myChatSummarize = async () => {
   myChatMsgs.value.forEach((msg) => {
     joinedText += `${msg.content}\n`;
   });
+
+  console.log("joined", joinedText);
 
   const DEFAULT_PARAMS = {
     model: "gpt-3.5-turbo",
@@ -193,8 +214,8 @@ const myChatSummarize = async () => {
         content: `"${joinedText}"`,
       },
     ],
-    max_tokens: 1024,
-    temperature: 0.0,
+    max_tokens: 128,
+    temperature: 0.66,
     // frequency_penalty: 1.0,
     // stream: true,
   };
@@ -276,7 +297,7 @@ const classCm = (msg) => {
   }
 };
 
-const createMemo = () => {
+const createMemo = async () => {
   if (myTextCr.value.length === 0) return;
 
   memoId.value = memoArr.value.length;
@@ -293,6 +314,9 @@ const createMemo = () => {
     msgs: [],
     date: new Date().getTime(),
   });
+
+  await myPromises();
+
   document.getElementById("addMemo").scrollIntoView({ behavior: "smooth" });
 };
 
@@ -336,12 +360,6 @@ const selectTag = (ev, tag) => {
   } else {
     memoArrFiltered.value = memoArr.value;
   }
-};
-
-const newMemo = () => {
-  myTextCr.value = myText.value;
-  myText.value = "";
-  document.getElementById("createMemo").scrollIntoView({ behavior: "smooth" });
 };
 
 onMounted(() => {
@@ -389,6 +407,7 @@ onMounted(() => {
       class="max-w-md w-[48rem] m-1 p-1 shrink-0 border border-primary flex flex-col justify-between items-stretch"
     >
       <section class="flex flex-col overflow-scroll">
+        <h2>MemoPads</h2>
         <div
           v-if="currentFilterTag != ''"
           class="badge badge-outline bg-primary text-white"
@@ -406,12 +425,15 @@ onMounted(() => {
           >
             {{ memo.title }}
           </h1>
+
           <p class="text-right">{{ new Date(memo.date).toLocaleString() }}</p>
-          <div
-            v-for="tag of memo.tags"
-            class="badge badge-outline bg-primary bg-primary-content"
-          >
-            {{ tag }}
+          <div class="flex justify-end items-baseline flex-wrap">
+            <div
+              v-for="tag of memo.tags"
+              class="badge badge-outline bg-primary bg-primary-content"
+            >
+              {{ tag }}
+            </div>
           </div>
         </article>
       </section>
@@ -424,7 +446,7 @@ onMounted(() => {
           placeholder="Space of My Awesome Idea.."
         ></textarea>
         <button
-          class="btn p-2 m-2 btn-primary"
+          class="btn p-2 m-2 btn-secondary"
           type="button"
           :disabled="isDis"
           @click="createMemo"
@@ -435,9 +457,10 @@ onMounted(() => {
     </section>
     <section
       id="addMemo"
-      class="max-w-md w-[48rem] shrink-0 border border-primary m-1 p-1 flex flex-col justify-between items-stretch"
+      class="max-w-md w-[48rem] max-h-[100vh] overflow-scroll shrink-0 border border-primary m-1 p-1 flex flex-col justify-between items-stretch"
     >
       <main>
+        <h2>Memos</h2>
         <article class="card m-2 p-2 shadow-xl" v-if="myChatMsgs.length > 0">
           <h1 class="card-title">
             {{ myTitle }}
@@ -450,10 +473,12 @@ onMounted(() => {
               {{ tag }}
             </div>
           </div>
-          <div class="card-body">
-            <p v-for="msg of myChatMsgs" :class="classCm(msg)">
-              {{ msg.content }}
-            </p>
+          <div class="card-body prose prose-base">
+            <div
+              v-html="DOMPurify.sanitize(marked.parse(msg.content))"
+              v-for="msg of myChatMsgs"
+              :class="classCm(msg)"
+            ></div>
           </div>
         </article>
       </main>
@@ -467,14 +492,6 @@ onMounted(() => {
           placeholder="My Awesome Idea.."
         ></textarea>
         <div class="flex justify-between items-stretch">
-          <button
-            class="flex-1 btn p-2 m-2 btn-secondary"
-            type="button"
-            :disabled="isDis"
-            @click="newMemo"
-          >
-            New MemoPad
-          </button>
           <button
             class="flex-1 btn p-2 m-2 btn-primary"
             type="button"
