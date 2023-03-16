@@ -176,7 +176,9 @@ const myChatTagger = async () => {
       },
       {
         role: "user",
-        content: `{"text": "${myText.value}", "tags": [${usedTags.value
+        content: `{"text": "${
+          myText.value
+        }", "tags": ["idea", "to-do", "done",${usedTags.value
           .map((elm) => {
             return elm.data.name;
           })
