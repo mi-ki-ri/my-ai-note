@@ -267,6 +267,11 @@ const myChatSummarize = async () => {
       {
         role: "system",
         content:
+          "あなたによって要約されたテキストは記事の見出しとして使用される予定です。",
+      },
+      {
+        role: "system",
+        content:
           "50文字以下で一行のテキストが渡された場合も、要約しようと努力してください。",
       },
       {
