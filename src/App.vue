@@ -178,14 +178,14 @@ const myChatTagger = async () => {
         role: "user",
         content: `{"text": "${
           myText.value
-        }", "tags": ["idea", "to-do", "done",${usedTags.value
+        }", "tags": ["#idea", "#to-do", "#done", ${usedTags.value
           .map((elm) => {
             return elm.data.name;
           })
-          .join(",")}]}`,
+          .join(", ")}]}`,
       },
     ],
-    max_tokens: 256,
+    max_tokens: 512,
     temperature: 0.0,
     // frequency_penalty: 1.0,
     // stream: true,
@@ -540,14 +540,13 @@ onMounted(() => {
           }
         });
       });
+      selectTag({}, null);
     } else {
       user.value = usr;
       memoArr.value = [];
       usedTags.value = [];
     }
   });
-
-  selectTag({}, null);
 });
 </script>
 
